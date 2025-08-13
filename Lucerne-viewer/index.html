@@ -1,0 +1,527 @@
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>TypeSpecimens Viewer</title>
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <script>
+      var jq = jQuery.noConflict(true);
+  </script>
+  <style>
+    #metadataSidebar {
+      position: fixed;
+      top: 50%;
+      left: 0;
+      transform: translate(-100%, -50%);
+      background: #f4f4f4;
+      border: 1px solid #ccc;
+      box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+      padding: 1em 1em 1em 4em;
+      max-width: 300px;
+      min-width: 200px;
+      z-index: 1000;
+      border-radius: 0 10px 10px 0; /* Rounded on right side */
+      transition: transform 0.3s ease-in-out;
+    }
+
+    #metadataSidebar.open {
+      transform: translate(0, -50%);
+    }
+
+    #toggleSidebar {
+      position: fixed;
+      top: 50%;
+      left: 0;
+      transform: translateY(-50%);
+      z-index: 1001;
+      background-color: #444;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      cursor: pointer;
+      border-radius: 0 4px 4px 0;
+    }
+
+    #metadataContent {
+      margin-top: 0px;
+      overflow-y: auto;
+      max-height: calc(100vh - 50px);
+    }
+
+    #metadataList {
+      font-family: 'Arial', sans-serif; 
+      font-size: 14px; 
+      list-style: none;
+      padding: 0;
+    }
+
+    #metadataList li {
+      margin: 0.5em 0;
+    }
+    
+    #dropdownContainer {
+      width: 100%;
+      display: flex;
+      justify-content: left;
+      margin-top: 40px; 
+      margin-left: 64px
+    }
+
+    #folderDropdown {
+      width: 400px
+    }
+
+    #previewPopup {
+      position: absolute;
+      top: 60px; /* adjust depending on dropdown position */
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      padding: 4px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    #previewPopup img {
+      max-width: 200px;
+      max-height: 150px;
+      display: block;
+    }
+    
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    photogrammetry-viewer {
+      width: 100%;          /* or any max width you prefer */
+      height: calc(100vh - 60px);
+      margin: 0 auto;      /* centers horizontally */
+      box-sizing: border-box; /* ensures padding/border included in width */
+    }
+  </style>
+
+<script>
+  (function () {
+    const logDiv = document.createElement('div');
+    logDiv.id = 'viewer-log';
+    logDiv.style = `
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      background: #ffffffee;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font-family: sans-serif;
+      font-size: 13px;
+      max-width: 350px;
+      white-space: normal;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      z-index: 1000;
+    `;
+    document.addEventListener('DOMContentLoaded', () => {
+      document.body.appendChild(logDiv);
+    });
+
+    const originalLog = console.log;
+    console.log = function (...args) {
+      originalLog.apply(console, args);
+
+      const message = args.map(arg => {
+        if (typeof arg === 'object') {
+          try {
+            return JSON.stringify(arg);
+          } catch (e) {
+            return '[object]';
+          }
+        }
+        return String(arg);
+      }).join(' ');
+
+      if (message.startsWith('Loaded image')) {
+        const pathMatch = message.match(/\/([^\/]+?)\/redof\/([^\/]+)$/);
+        if (pathMatch && pathMatch.length === 3) {
+          const folder = decodeURIComponent(pathMatch[1]);
+          const filename = decodeURIComponent(pathMatch[2]);
+
+          // Remove /DO_NOT_TOUCH/ prefix and format with line breaks
+          const relativePath = `${folder}/redof/${filename}`;
+          const formattedPath = relativePath.replace(/\//g, '/<br>');
+
+          logDiv.innerHTML = `
+            <strong>Aktuelles Bild:</strong><br>
+            <span style="color: #333; font-family: monospace; font-size: 16px;">${formattedPath}</span>
+          `;
+        } else {
+          logDiv.textContent = 'Konnte Pfad des Bildes nicht finden';
+        }
+      }
+    };
+  })();
+
+</script>
+<script src="photogrammetry-viewer.js"></script>
+</head>
+  <body>
+    <div id="previewPopup" style="display: none;">
+      <img id="previewImage" src="" alt="Preview" />
+    </div>
+    <div id="dropdownContainer">
+      <select id="folderDropdown">
+      </select>
+    </div>
+
+    <script>
+      let metadataMap = {};
+      // Helper function to parse the CSV and handle space encoding
+    function parseCSV(csvText) {
+      const lines = csvText.trim().split('\n');
+      const metadataMap = {};
+
+      for (let line of lines) {
+        const parts = line.split(',');
+        
+        // Only proceed if we have at least the 12 fields expected
+        if (parts.length < 12) continue;
+
+        // Take the first 11 values
+        const first11 = parts.slice(0, 11).map(cell => cell.trim());
+        // Join the rest back into a single string for biblioref
+        const biblioref = parts.slice(11).join(',').trim();
+
+        const [
+          folder,
+          order,
+          family,
+          subfamily,
+          tribe,
+          genus,
+          subgenus,
+          species,
+          subspecies,
+          authoryear,
+          typestatus
+        ] = first11;
+
+        const decodedFolder = decodeURIComponent(folder + '_viewer');
+
+        // Generate display name from taxonomic info
+        const displayName = [genus, species, subspecies].filter(Boolean).join(' ');
+
+        metadataMap[decodedFolder] = {
+          Folder: decodedFolder,
+          Order: order,
+          Family: family,
+          Subfamily: subfamily,
+          Tribe: tribe,
+          Genus: genus,
+          Subgenus: subgenus,
+          Species: species,
+          Subspecies: subspecies,
+          Authoryear: authoryear,
+          Typestatus: typestatus,
+          Biblioref: biblioref,
+          DisplayName: displayName
+        };
+      }
+
+      console.log("📄 Parsed metadata (manual headers):", metadataMap);
+      return metadataMap;
+    }
+
+
+      document.addEventListener('DOMContentLoaded', () => {
+          const dropdown = document.getElementById('folderDropdown');
+          const toggleBtn = document.getElementById('toggleSidebar');
+          const sidebar = document.getElementById('metadataSidebar');
+
+          toggleBtn.addEventListener('click', () => {
+            sidebar.classList.toggle('open');
+            toggleBtn.textContent = sidebar.classList.contains('open') ? '⮜' : '☰';
+          });
+          // Fetch the CSV file containing folder names and display text
+          fetch('Lucerne_Type_Collection_SwissCollNet.csv')  // Replace with your CSV file URL
+              .then(response => response.text())
+              .then(csv => {
+                  metadataMap = parseCSV(csv);
+
+                  // Fetch the folder list (from the server directory)
+                  fetch('NML_TypeSpecimens_all_Viewer/')
+                      .then(response => response.text())
+                      .then(html => {
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(html, 'text/html');
+
+                        const links = [...doc.querySelectorAll('a')];
+                        const folders = links
+                            .map(link => link.getAttribute('href'))
+                            .filter(name => name.endsWith('/') && name !== '../')
+                            .map(name => name.replace('/', ''));
+
+                        folders.forEach(folder => {
+                          const option = document.createElement('option');
+                          option.value = folder;  // Append suffix to match metadata keys
+                          const metadata = metadataMap[decodeURIComponent(folder)];
+                          const displayName = metadata ? metadata.DisplayName : folder;
+                          option.textContent = displayName;
+                          dropdown.appendChild(option);
+                      });
+
+                        // ✅ Initialize Select2 here
+                        jq(document).ready(function () {
+                          jq('#folderDropdown').select2({
+                          placeholder: 'Im Suchfeld Name des Insekts oder ID eingeben',
+                          allowClear: true,
+                          matcher: function (params, data) {
+                            if (jq.trim(params.term) === '') return data;
+                            const term = params.term.toLowerCase();
+                            const text = (data.text || '').toLowerCase();
+                            const value = (data.id || '').toLowerCase();
+                            return (text.includes(term) || value.includes(term)) ? data : null;
+                          },
+                          templateResult: function (data) {
+                            if (!data.id) return data.text; // Skip placeholder
+
+                            const container = document.createElement('div');
+                            container.style.display = 'flex';
+                            container.style.alignItems = 'center';
+
+                            const img = document.createElement('img');
+                            img.style.width = '60px';
+                            img.style.height = 'auto';
+                            img.style.marginRight = '8px';
+                            img.style.border = '1px solid #ccc';
+                            img.style.borderRadius = '4px';
+
+                            const textSpan = document.createElement('span');
+                            textSpan.textContent = data.text;
+
+                            container.appendChild(img);
+                            container.appendChild(textSpan);
+
+                            // Load image only on hover
+                            container.addEventListener('mouseenter', () => {
+                              img.src = `./preview_thumbnails/${data.id}.jpeg`;
+                            });
+
+                            return jq(container);
+                          },
+                          language: {
+                            noResults: function (params) {
+                              const term = (params && params.term) ? params.term.toLowerCase() : '';
+                              return "Kein passendes Exemplar gefunden.";
+                            }
+                          }
+                        });
+
+                        const defaultKey = Object.keys(metadataMap)[0];
+                        if (defaultKey) {
+                          jq('#folderDropdown').val(defaultKey).trigger('change.select2');
+                          updateViewer(defaultKey);
+                          updateMetadataDisplay(metadataMap[defaultKey]);
+                        }
+
+                        // Add preview logic *after* viewer and metadata are initialized
+                        const dropdown = document.getElementById('folderDropdown');
+                        const previewPopup = document.getElementById('previewPopup');
+                        const previewImage = document.getElementById('previewImage');
+
+                        dropdown.addEventListener("mouseover", (e) => {
+                          const hoveredOption = e.target;
+                          const folderName = hoveredOption.value;
+                          if (folderName) {
+                            const imagePath = `./preview_thumbnails/${folderName}.jpeg`;
+                            previewImage.src = imagePath;
+                            previewPopup.style.display = "block";
+                          }
+                        });
+
+                        dropdown.addEventListener("mouseout", () => {
+                          previewPopup.style.display = "none";
+                        });
+
+                        jq('#folderDropdown').on('select2:select', function (e) {
+                          const selected = jq(this).val();
+                          if (selected) {
+                            updateViewer(selected);
+                            const metadata = metadataMap[decodeURIComponent(selected)] || metadataMap[selected];
+                            updateMetadataDisplay(metadata);
+                          }
+                        });
+
+                        document.addEventListener('keydown', function (e) {
+                          const dropdown = document.getElementById('folderDropdown');
+                          if (!dropdown) return;
+                          const options = [...dropdown.options];
+                          const currentIndex = dropdown.selectedIndex;
+                          let newIndex = null;
+                          if (e.key === 'ArrowDown') {
+                            newIndex = (currentIndex + 1) % options.length; // wrap around forward
+                          } else if (e.key === 'ArrowUp') {
+                            newIndex = (currentIndex - 1 + options.length) % options.length; // wrap around back
+                          }
+                          if (newIndex !== null) {
+                            const newValue = options[newIndex].value;
+                            jq('#folderDropdown').val(newValue).trigger('change.select2');
+                            const metadata = metadataMap[decodeURIComponent(newValue)] || metadataMap[newValue];
+                            updateViewer(newValue);
+                            updateMetadataDisplay(metadata);
+                            e.preventDefault(); // prevent accidental side scrolling
+                          }
+                        });
+
+                        let sidebarCooldown = false;
+
+                        document.addEventListener('keydown', function (e) {
+                          const activeTag = document.activeElement.tagName.toLowerCase();
+
+                          if ((e.key === 'i' || e.key === 'I') &&
+                              activeTag !== 'input' &&
+                              activeTag !== 'textarea' &&
+                              activeTag !== 'select' &&
+                              !sidebarCooldown) {
+
+                            const sidebar = document.getElementById('metadataSidebar');
+                            const toggleBtn = document.getElementById('toggleSidebar');
+
+                            if (sidebar && toggleBtn) {
+                              sidebar.classList.toggle('open');
+                              toggleBtn.textContent = sidebar.classList.contains('open') ? '⮜' : '☰';
+
+                              // Start cooldown
+                              sidebarCooldown = true;
+                              setTimeout(() => {
+                                sidebarCooldown = false;
+                              }, 300); // Cooldown duration in milliseconds
+                            }
+                          }
+                        });
+                        
+                        document.addEventListener('keydown', function (e) {
+                          const activeTag = document.activeElement.tagName.toLowerCase();
+                          if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') {
+                            return;
+                          }
+                          if (e.key === 's' || e.key === 'S') {
+                            const select = jq('#folderDropdown');
+                            select.select2('open');
+                            setTimeout(() => {
+                              const searchField = document.querySelector('.select2-container input.select2-search__field');
+                              if (searchField) searchField.focus();
+                            }, 0);
+                          }
+                        });
+                      });
+                      console.log("📁 Found folders", folders);
+                    });
+                      })
+                      .catch(error => {
+                          console.error("❌ Could not fetch folder list:", error);
+                      });
+              })
+              .catch(error => {
+                  console.error("❌ Could not fetch CSV file:", error);
+              });
+    const dropdown = document.getElementById("dropdown"); // your <select> element
+    const previewPopup = document.getElementById("previewPopup");
+    const previewImage = document.getElementById("previewImage");
+
+    // Attach mouseover/mouseout to each option
+    dropdown.addEventListener("mouseover", (e) => {
+      const hoveredOption = e.target;
+      const folderName = hoveredOption.value;
+      if (folderName) {
+        const imagePath = `./preview_thumbnails/${folderName}.jpeg`;
+        previewImage.src = imagePath;
+        previewPopup.style.display = "block";
+      }
+    });
+
+    dropdown.addEventListener("mouseout", () => {
+      previewPopup.style.display = "none";
+});
+    </script>
+
+    <photogrammetry-viewer isYupTransformApplied
+      srcScanInformation='/NML_TypeSpecimens_all_Viewer/NML_ENT GBIF_Chr00000008_viewer/cameras.xml' 
+      src3D='/NML_TypeSpecimens_all_Viewer/NML_ENT GBIF_Chr00000008_viewer/Model/NML_ENT GBIF_Chr00000008_viewer.glb'
+      src2D='/NML_TypeSpecimens_all_Viewer/NML_ENT GBIF_Chr00000008_viewer/redof/'>
+    </photogrammetry-viewer>
+    <script>
+      document.getElementById('folderDropdown').addEventListener('change', function () {
+        const selected = this.value;
+        if (selected) {
+          updateViewer(selected);
+          const metadata = metadataMap[decodeURIComponent(selected)] || metadataMap[selected];
+          updateMetadataDisplay(metadata);
+  }
+});
+      const germanLabels = {
+        Order: "Ordnung",
+        Family: "Familie",
+        Subfamily: "Unterfamilie",
+        Tribe: "Tribus",
+        Genus: "Gattung",
+        Subgenus: "Untergattung",
+        Species: "Art",
+        Subspecies: "Unterart",
+        Authoryear: "Autor & Jahr",
+        Typestatus: "Typstatus",
+        Biblioref: "Literatur"
+      };
+
+      function updateMetadataDisplay(metadata) {
+        const list = document.getElementById('metadataList');
+        const title = document.getElementById('metadataTitle');
+        list.innerHTML = ''; // Clear previous
+
+        if (!metadata) {
+          title.textContent = 'Keine Metadaten verfügbar';
+          list.innerHTML = '<li><em>Keine Metadaten verfügbar</em></li>';
+          return;
+        }
+
+        // Extract folder name without _viewer
+        const cleanFolderName = metadata.Folder.replace(/_viewer$/, '');
+        title.textContent = cleanFolderName;
+
+        for (const key of Object.keys(germanLabels)) {
+          if (!(key in metadata)) continue; // Skip if missing
+
+          const label = germanLabels[key];
+          const value = metadata[key] || '-';
+          const li = document.createElement('li');
+          li.innerHTML = `<strong>${label}:</strong> ${value}`;
+          list.appendChild(li);
+        }
+      }
+
+      function updateViewer(inputName) {
+        var glbPath = inputName ? inputName : '/NML_ENT GBIF_Chr00000008_viewer';
+        var basePath = inputName ? '/NML_TypeSpecimens_all_Viewer/' + inputName : '/NML_ENT GBIF_Chr00000008_viewer';
+
+        var viewer = document.querySelector('photogrammetry-viewer');
+        viewer.setAttribute('srcScanInformation', basePath + '/cameras.xml');
+        viewer.setAttribute('src3D', basePath + '/Model/' + glbPath + '.glb');
+        viewer.setAttribute('src2D', basePath + '/redof/');
+      }
+    </script>
+
+    <div id="viewer-log"
+      style="position: fixed; top: 10px; right: 10px; background: #ffffffee; padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-family: monospace; font-size: 13px; max-width: 300px; max-height: 150px; overflow-y: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 1000;">
+    </div>
+    <button id="toggleSidebar">☰</button>
+    <div id="metadataSidebar">
+      <div id="metadataContent">
+        <h3 id="metadataTitle">Individuum Metadaten</h3>
+        <ul id="metadataList"></ul>
+      </div>
+    </div>
+  </body>
+</html>
