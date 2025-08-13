@@ -11,4 +11,5 @@ For each specimen, the sidebar includes some information from the Lucerne_Type_C
 ## Keyboard shortcuts
 
 s: search
+
 i: toggle sidebar
