@@ -3,6 +3,7 @@ This is a Gaussian Splat Viewer that can be used for testing/debugging. It is ba
 https://github.com/mkkellogg/GaussianSplats3D
 
 Supportet data types are: .ply, .ksplat, .splat
+
 Not supported: .glb, ...
 
 New models can be loaded in via drag-and-drop or with the "load" button in the top right corner. It is possible to load in several models into the same window.
